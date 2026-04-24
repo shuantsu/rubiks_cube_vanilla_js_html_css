@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulador de Cubo Mágico 3x3x3</title>
+    <style>
+        :root {
+            --bg-color: #0f1115;
+            --panel-bg: #1a1d23;
+            --text-color: #e0e0e0;
+            --accent: #3b82f6;
+            --border: #2d333b;
+        }
+        body, html {
+            margin: 0; padding: 0;
+            width: 100%; height: 100%;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: 'Inter', system-ui, sans-serif;
+            overflow: hidden;
+            display: flex;
+        }
+        #app { display: flex; width: 100vw; height: 100vh; }
+        #canvas-container { flex-grow: 1; position: relative; cursor: move; }
+        canvas { display: block; width: 100%; height: 100%; }
+        #sidebar {
+            width: 350px;
+            background-color: var(--panel-bg);
+            border-left: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+            box-sizing: border-box;
+            gap: 15px;
+            overflow-y: auto;
+            box-shadow: -5px 0 15px rgba(0,0,0,0.3);
+        }
+        h2 { margin: 0 0 5px 0; font-size: 1.2rem; color: var(--accent); }
+        textarea {
+            width: 100%;
+            height: 100px;
+            background: #0d1117;
+            color: #4ade80;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 12px;
+            font-family: 'Fira Code', monospace;
+            font-size: 0.9rem;
+            resize: none;
+            box-sizing: border-box;
+            outline: none;
+        }
+        textarea:focus { border-color: var(--accent); }
+        .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        button {
+            padding: 10px;
+            border: none;
+            border-radius: 6px;
+            background: var(--accent);
+            color: white;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        button:hover { filter: brightness(1.2); transform: translateY(-1px); }
+        button.secondary { background: #374151; }
+        #history {
+            flex-grow: 1;
+            background: #0d1117;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 10px;
+            font-size: 0.8rem;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            font-family: monospace;
+            color: #9ca3af;
+        }
+        .hint { font-size: 0.75rem; color: #6b7280; margin-top: -5px; }
+        h3 { font-size: 0.9rem; margin: 10px 0 5px 0; text-transform: uppercase; letter-spacing: 1px; color: #6b7280; }
+    </style>
+</head>
+<body>
+
+<div id="app">
+    <div id="canvas-container">
+        <canvas id="cubeCanvas"></canvas>
+    </div>
+    <div id="sidebar">
+        <h2>Simulador 3x3x3</h2>
+        <p class="hint">Orbitar: Arrastar | Zoom: Scroll</p>
+        
+        <textarea id="algoInput" placeholder="Ex: R U R' U' ..."></textarea>
+        <p class="hint">Ctrl+Enter para aplicar algoritmo</p>
+        
+        <div class="controls">
+            <button onclick="uiExecute()">Executar</button>
+            <button class="secondary" onclick="uiReset()">Reiniciar</button>
+            <button class="secondary" onclick="uiScramble()">Embaralhar</button>
+        </div>
+
+        <h3>Histórico</h3>
+        <div id="history">Cubo resolvido.</div>
+    </div>
+</div>
+
+<script>
+// === NP LIBRARY (NumPy-lite) ===
+const np = {
+    Array: class {
+        constructor(data, shape) {
+            if (shape) { this.data = data; this.shape = shape; } 
+            else {
+                const flatten = (arr) => arr.reduce((acc, val) => acc.concat(Array.isArray(val) ? flatten(val) : val), []);
+                const getShape = (arr) => Array.isArray(arr) ? [arr.length, ...getShape(arr[0])] : [];
+                this.data = flatten(data);
+                this.shape = getShape(data);
+            }
+            this.ndim = this.shape.length;
+            this.size = this.data.length;
+        }
+        _getIdx(coords) {
+            let idx = 0, stride = 1;
+            for (let i = this.ndim - 1; i >= 0; i--) { idx += coords[i] * stride; stride *= this.shape[i]; }
+            return idx;
+        }
+        get(coords) { return this.data[this._getIdx(coords)]; }
+        set(coords, val) { this.data[this._getIdx(coords)] = val; }
+        slice2D(axis, index) {
+            const [d0, d1, d2] = this.shape;
+            let slice = [];
+            if (axis === 'x') {
+                for (let y = 0; y < d1; y++) {
+                    let row = [];
+                    for (let z = 0; z < d2; z++) row.push(this.get([index, y, z]));
+                    slice.push(row);
+                }
+            } else if (axis === 'y') {
+                for (let x = 0; x < d0; x++) {
+                    let row = [];
+                    for (let z = 0; z < d2; z++) row.push(this.get([x, index, z]));
+                    slice.push(row);
+                }
+            } else {
+                for (let x = 0; x < d0; x++) {
+                    let row = [];
+                    for (let y = 0; y < d1; y++) row.push(this.get([x, y, index]));
+                    slice.push(row);
+                }
+            }
+            return new np.Array(slice);
+        }
+        setSlice2D(axis, index, sliceArr) {
+            const [sH, sW] = sliceArr.shape;
+            if (axis === 'x') {
+                for (let y = 0; y < sH; y++)
+                    for (let z = 0; z < sW; z++) this.set([index, y, z], sliceArr.get([y, z]));
+            } else if (axis === 'y') {
+                for (let x = 0; x < sH; x++)
+                    for (let z = 0; z < sW; z++) this.set([x, index, z], sliceArr.get([x, z]));
+            } else {
+                for (let x = 0; x < sH; x++)
+                    for (let y = 0; y < sW; y++) this.set([x, y, index], sliceArr.get([x, y]));
+            }
+        }
+    },
+    array: (data) => new np.Array(data),
+    full: (shape, val) => new np.Array(new Array(shape.reduce((a,b)=>a*b, 1)).fill(val), shape),
+    rot90: (arr2D, k = 1) => {
+        k = ((k % 4) + 4) % 4;
+        if (k === 0) return new np.Array([...arr2D.data], arr2D.shape);
+        let [H, W] = arr2D.shape;
+        let current = arr2D;
+        for (let r = 0; r < k; r++) {
+            let nextData = new Array(H * W);
+            for (let i = 0; i < H; i++) {
+                for (let j = 0; j < W; j++) { nextData[(W - 1 - j) * H + i] = current.get([i, j]); }
+            }
+            current = new np.Array(nextData, [W, H]);
+            [H, W] = [W, H];
+        }
+        return current;
+    },
+    matmul: (a, b) => {
+        const [aH, aW] = a.shape;
+        const [bH, bW] = b.shape;
+        const res = new Array(aH * bW).fill(0);
+        for (let i = 0; i < aH; i++) {
+            for (let j = 0; j < bW; j++) {
+                for (let k = 0; k < aW; k++) { res[i * bW + j] += a.get([i, k]) * b.get([k, j]); }
+            }
+        }
+        return new np.Array(res, [aH, bW]);
+    }
+};
+
+// === CONFIGURAÇÃO GLOBAL ===
+const COLORS = { U: '#FFFFFF', D: '#FFD500', F: '#009B48', B: '#0046AD', R: '#B90000', L: '#FF5900', BODY: '#111111' };
+
+// Correção do sentido de U e D
+const MOVE_CONFIG = {
+    'U': { axis: 'y', idxs: [4, 3], k: 1 }, 
+    'D': { axis: 'y', idxs: [0, 1], k: -1 }, 
+    'R': { axis: 'x', idxs: [4, 3], k: -1 },
+    'L': { axis: 'x', idxs: [0, 1], k: 1 },
+    'F': { axis: 'z', idxs: [4, 3], k: -1 },
+    'B': { axis: 'z', idxs: [0, 1], k: 1 }
+};
+
+class RubiksCube {
+    constructor() { 
+        this.reset();
+        this.moveQueue = [];
+        this.animatingMove = null;
+        this.animProgress = 0;
+    }
+
+    reset() {
+        this.data = np.full([5, 5, 5], "");
+        for (let x = 0; x < 5; x++) {
+            for (let y = 0; y < 5; y++) {
+                for (let z = 0; z < 5; z++) {
+                    if (this.shouldExist(x, y, z)) {
+                        let color = COLORS.BODY;
+                        if (y === 4 && x >= 1 && x <= 3 && z >= 1 && z <= 3) color = COLORS.U;
+                        else if (y === 0 && x >= 1 && x <= 3 && z >= 1 && z <= 3) color = COLORS.D;
+                        else if (z === 4 && x >= 1 && x <= 3 && y >= 1 && y <= 3) color = COLORS.F;
+                        else if (z === 0 && x >= 1 && x <= 3 && y >= 1 && y <= 3) color = COLORS.B;
+                        else if (x === 4 && y >= 1 && y <= 3 && z >= 1 && z <= 3) color = COLORS.R;
+                        else if (x === 0 && y >= 1 && y <= 3 && z >= 1 && z <= 3) color = COLORS.L;
+                        this.data.set([x, y, z], color);
+                    }
+                }
+            }
+        }
+        this.history = [];
+        this.moveQueue = [];
+        this.animatingMove = null;
+        document.getElementById('history').innerText = "Cubo resolvido.";
+    }
+
+    shouldExist(x, y, z) {
+        const isSticker = (v) => v === 0 || v === 4;
+        const isRange = (v) => v >= 1 && v <= 3;
+        const isBody = (v) => v === 1 || v === 3;
+        return (isSticker(x) && isRange(y) && isRange(z)) ||
+               (isSticker(y) && isRange(x) && isRange(z)) ||
+               (isSticker(z) && isRange(x) && isRange(y)) ||
+               (isBody(x) && isRange(y) && isRange(z)) ||
+               (isBody(y) && isRange(x) && isRange(z)) ||
+               (isBody(z) && isRange(x) && isRange(y));
+    }
+
+    queueMove(notation) { this.moveQueue.push(notation); }
+
+    updateAnimation(dt) {
+        if (!this.animatingMove) {
+            if (this.moveQueue.length > 0) {
+                const notation = this.moveQueue.shift();
+                const base = notation[0].toUpperCase();
+                const modifier = notation.substring(1);
+                const config = MOVE_CONFIG[base];
+                if (!config) return;
+
+                let mult = 1;
+                if (modifier === "'") mult = -1;
+                if (modifier === "2") mult = 2;
+
+                this.animatingMove = {
+                    notation,
+                    axis: config.axis,
+                    idxs: config.idxs,
+                    k: config.k * mult,
+                    angle: (config.k * mult) * (Math.PI / 2)
+                };
+                this.animProgress = 0;
+            }
+        } else {
+            this.animProgress += dt * 6;
+            if (this.animProgress >= 1) {
+                const move = this.animatingMove;
+                move.idxs.forEach(idx => {
+                    let slice = this.data.slice2D(move.axis, idx);
+                    this.data.setSlice2D(move.axis, idx, np.rot90(slice, move.k));
+                });
+                this.history.push(move.notation);
+                document.getElementById('history').innerText = this.history.join(" ");
+                this.animatingMove = null;
+                this.animProgress = 0;
+            }
+        }
+    }
+}
+
+// === RENDERER & CAMERA ===
+class Camera {
+    constructor() { 
+        this.azimuth = 35 * Math.PI / 180; 
+        this.elevation = 25 * Math.PI / 180; 
+        this.zoom = 1.0; 
+    }
+    getMatrix() {
+        const cosA = Math.cos(this.azimuth), sinA = Math.sin(this.azimuth);
+        const cosE = Math.cos(this.elevation), sinE = Math.sin(this.elevation);
+        // Matriz de visualização consistente com o sistema de coordenadas
+        const mY = np.array([[cosA, 0, -sinA], [0, 1, 0], [sinA, 0, cosA]]);
+        const mX = np.array([[1, 0, 0], [0, cosE, -sinE], [0, sinE, cosE]]);
+        return np.matmul(mX, mY);
+    }
+}
+
+const cube = new RubiksCube();
+const camera = new Camera();
+const canvas = document.getElementById('cubeCanvas');
+const ctx = canvas.getContext('2d');
+
+function getRotationMatrix(axis, angle) {
+    const c = Math.cos(angle), s = Math.sin(angle);
+    // Matrizes de rotação para animação
+    if (axis === 'x') return np.array([[1, 0, 0], [0, c, -s], [0, s, c]]);
+    if (axis === 'y') return np.array([[c, 0, -s], [0, 1, 0], [s, 0, c]]);
+    if (axis === 'z') return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]]);
+    return np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]]);
+}
+
+function project(vec3, matrix, scale, center) {
+    const v = np.array([[vec3[0]], [vec3[1]], [vec3[2]]]);
+    const proj = np.matmul(matrix, v);
+    return { x: proj.get([0, 0]) * scale + center.x, y: -proj.get([1, 0]) * scale + center.y, z: proj.get([2, 0]) };
+}
+
+let lastTime = performance.now();
+function loop(timestamp) {
+    const dt = (timestamp - lastTime) / 1000;
+    lastTime = timestamp;
+    cube.updateAnimation(dt);
+    render();
+    requestAnimationFrame(loop);
+}
+
+function render() {
+    canvas.width = canvas.clientWidth;
+    canvas.height = canvas.clientHeight;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const scale = (Math.min(canvas.width, canvas.height) / 8) * camera.zoom;
+    const center = { x: canvas.width / 2, y: canvas.height / 2 };
+    const viewMatrix = camera.getMatrix();
+
+    const stickerScale = 0.88, stickerThickness = 0.05;
+    const baseFaces = [
+        { n: [1, 0, 0], v: [[0.5, -0.5, -0.5], [0.5, 0.5, -0.5], [0.5, 0.5, 0.5], [0.5, -0.5, 0.5]] },
+        { n: [-1, 0, 0], v: [[-0.5, -0.5, 0.5], [-0.5, 0.5, 0.5], [-0.5, 0.5, -0.5], [-0.5, -0.5, -0.5]] },
+        { n: [0, 1, 0], v: [[-0.5, 0.5, -0.5], [-0.5, 0.5, 0.5], [0.5, 0.5, 0.5], [0.5, 0.5, -0.5]] },
+        { n: [0, -1, 0], v: [[-0.5, -0.5, 0.5], [-0.5, -0.5, -0.5], [0.5, -0.5, -0.5], [0.5, -0.5, 0.5]] },
+        { n: [0, 0, 1], v: [[-0.5, -0.5, 0.5], [0.5, -0.5, 0.5], [0.5, 0.5, 0.5], [-0.5, 0.5, 0.5]] },
+        { n: [0, 0, -1], v: [[0.5, -0.5, -0.5], [-0.5, -0.5, -0.5], [-0.5, 0.5, -0.5], [0.5, 0.5, -0.5]] },
+    ];
+
+    const polies = [];
+    const isAnim = cube.animatingMove !== null;
+    const animAngle = isAnim ? cube.animatingMove.angle * Math.min(1, cube.animProgress) : 0;
+    const animMatrix = isAnim ? getRotationMatrix(cube.animatingMove.axis, animAngle) : null;
+
+    for (let x = 0; x < 5; x++) {
+        for (let y = 0; y < 5; y++) {
+            for (let z = 0; z < 5; z++) {
+                const color = cube.data.get([x, y, z]);
+                if (!color) continue;
+
+                let localPos = [x - 2, y - 2, z - 2];
+                let sx = 1, sy = 1, sz = 1;
+                let isSticker = false;
+
+                if (x === 0 || x === 4) { isSticker = true; sx = stickerThickness; sy = sz = stickerScale; localPos[0] = (x === 4 ? 1.51 : -1.51); }
+                else if (y === 0 || y === 4) { isSticker = true; sy = stickerThickness; sx = sz = stickerScale; localPos[1] = (y === 4 ? 1.51 : -1.51); }
+                else if (z === 0 || z === 4) { isSticker = true; sz = stickerThickness; sx = sy = stickerScale; localPos[2] = (z === 4 ? 1.51 : -1.51); }
+
+                let currentMatrix = viewMatrix;
+                if (isAnim) {
+                    const inSlice = (cube.animatingMove.axis === 'x' && cube.animatingMove.idxs.includes(x)) ||
+                                    (cube.animatingMove.axis === 'y' && cube.animatingMove.idxs.includes(y)) ||
+                                    (cube.animatingMove.axis === 'z' && cube.animatingMove.idxs.includes(z));
+                    if (inSlice) currentMatrix = np.matmul(viewMatrix, animMatrix);
+                }
+
+                baseFaces.forEach(f => {
+                    const normMat = np.matmul(currentMatrix, np.array([[f.n[0]], [f.n[1]], [f.n[2]]]));
+                    if (normMat.get([2, 0]) > 0) {
+                        const points = f.v.map(v => project([localPos[0] + v[0]*sx, localPos[1] + v[1]*sy, localPos[2] + v[2]*sz], currentMatrix, scale, center));
+                        polies.push({ points, color, z: points.reduce((s, p) => s + p.z, 0) / 4, isSticker });
+                    }
+                });
+            }
+        }
+    }
+    polies.sort((a, b) => a.z - b.z).forEach(p => {
+        ctx.beginPath(); ctx.moveTo(p.points[0].x, p.points[0].y);
+        for (let i = 1; i < 4; i++) ctx.lineTo(p.points[i].x, p.points[i].y);
+        ctx.closePath(); ctx.fillStyle = p.color; ctx.fill();
+        ctx.strokeStyle = p.isSticker ? "rgba(0,0,0,0.4)" : "#000000";
+        ctx.lineWidth = p.isSticker ? 1 : 1.5; ctx.stroke();
+    });
+}
+
+// === INTERAÇÃO ===
+let isDragging = false, lastMouse = { x: 0, y: 0 };
+canvas.addEventListener('mousedown', e => { isDragging = true; lastMouse = { x: e.clientX, y: e.clientY }; });
+window.addEventListener('mousemove', e => {
+    if (!isDragging) return;
+    // Correção: Invertido sentido do arraste horizontal (azimute)
+    camera.azimuth -= (e.clientX - lastMouse.x) * 0.01;
+    camera.elevation = Math.max(-1.5, Math.min(1.5, camera.elevation + (e.clientY - lastMouse.y) * 0.01));
+    lastMouse = { x: e.clientX, y: e.clientY };
+});
+window.addEventListener('mouseup', () => isDragging = false);
+canvas.addEventListener('wheel', e => { e.preventDefault(); camera.zoom = Math.max(0.4, Math.min(3.0, camera.zoom - e.deltaY * 0.001)); }, { passive: false });
+
+function uiExecute() {
+    const input = document.getElementById('algoInput');
+    input.value.toUpperCase().split(/\s+/).filter(x => x.length > 0).forEach(m => cube.queueMove(m));
+    input.value = "";
+}
+function uiReset() { cube.reset(); }
+function uiScramble() {
+    const m = ['U','D','L','R','F','B'], mod = ['', "'", '2'];
+    for(let i=0; i<20; i++) cube.queueMove(m[Math.floor(Math.random()*6)]+mod[Math.floor(Math.random()*3)]);
+}
+document.getElementById('algoInput').addEventListener('keydown', e => { if (e.ctrlKey && e.key === 'Enter') uiExecute(); });
+window.addEventListener('resize', render);
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
